@@ -1,0 +1,6 @@
+# Binaries
+bin/
+/bot
+
+# Local caches
+.DS_Store

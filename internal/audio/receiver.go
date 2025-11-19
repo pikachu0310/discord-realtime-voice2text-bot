@@ -144,9 +144,12 @@ func (r *Receiver) handlePacket(pkt *discordgo.Packet, getDecoder func(uint32) (
 	}
 
 	if userID == "" {
+		r.logger.Printf("opcode recv: buffering frame ssrc=%d seq=%d timestamp=%d (no mapping yet)", pkt.SSRC, pkt.Sequence, pkt.Timestamp)
 		r.bufferPending(pkt.SSRC, pcm, getDecoder)
 		return
 	}
+
+	r.logger.Printf("opcode recv: resolved user=%s ssrc=%d seq=%d samples=%d", userID, pkt.SSRC, pkt.Sequence, len(pcm))
 
 	r.segmenter.AddSamples(userID, pcm)
 }
@@ -185,12 +188,14 @@ func (r *Receiver) bufferPending(ssrc uint32, pcm []int16, getDecoder func(uint3
 		return
 	}
 
-	if r.addPendingFrame(ssrc, pcm) {
+	startWait, totalSamples, frameCount := r.addPendingFrame(ssrc, pcm)
+	r.logger.Printf("pending buffer: ssrc=%d frames=%d total_samples=%d waiting=%t", ssrc, frameCount, totalSamples, startWait)
+	if startWait {
 		go r.awaitMapping(ssrc)
 	}
 }
 
-func (r *Receiver) addPendingFrame(ssrc uint32, pcm []int16) bool {
+func (r *Receiver) addPendingFrame(ssrc uint32, pcm []int16) (bool, int, int) {
 	r.pendingMu.Lock()
 	defer r.pendingMu.Unlock()
 
@@ -207,23 +212,26 @@ func (r *Receiver) addPendingFrame(ssrc uint32, pcm []int16) bool {
 		stream.totalSamples -= removed
 	}
 	if stream.waiting {
-		return false
+		return false, stream.totalSamples, len(stream.frames)
 	}
 	stream.waiting = true
-	return true
+	return true, stream.totalSamples, len(stream.frames)
 }
 
 func (r *Receiver) awaitMapping(ssrc uint32) {
 	if r.resolver == nil {
 		return
 	}
+	r.logger.Printf("await mapping start: ssrc=%d", ssrc)
 	userID, ok := r.resolver.Wait(ssrc, waitForMappingTimeout)
 	if !ok || userID == "" {
+		r.logger.Printf("await mapping failed: ssrc=%d", ssrc)
 		r.logUnknownSSRC(ssrc)
 		r.clearPending(ssrc)
 		return
 	}
 	frames := r.drainPending(ssrc)
+	r.logger.Printf("await mapping success: ssrc=%d user=%s frames=%d", ssrc, userID, len(frames))
 	for _, frame := range frames {
 		r.segmenter.AddSamples(userID, frame)
 	}

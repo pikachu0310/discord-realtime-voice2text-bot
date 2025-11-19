@@ -235,6 +235,7 @@ func (v *VoiceConnection) AddSSRCMappingHandler(h SSRCMappingHandler) {
 
 	v.Lock()
 	v.ssrcMappingHandlers = append(v.ssrcMappingHandlers, h)
+	v.log(LogDebug, "registered SSRC mapping handler (%d total)", len(v.ssrcMappingHandlers))
 	var existing []struct {
 		ssrc   uint32
 		userID string
@@ -248,6 +249,7 @@ func (v *VoiceConnection) AddSSRCMappingHandler(h SSRCMappingHandler) {
 	v.Unlock()
 
 	for _, entry := range existing {
+		v.log(LogDebug, "replaying SSRC mapping user=%s ssrc=%d", entry.userID, entry.ssrc)
 		h(v, entry.ssrc, entry.userID)
 	}
 }
@@ -280,6 +282,7 @@ func (v *VoiceConnection) setSSRCMapping(ssrc uint32, userID string) {
 	}
 	v.ssrcMap[ssrc] = userID
 	handlers := append([]SSRCMappingHandler(nil), v.ssrcMappingHandlers...)
+	v.log(LogDebug, "set SSRC mapping user=%s ssrc=%d handlers=%d", userID, ssrc, len(handlers))
 	v.Unlock()
 
 	for _, handler := range handlers {

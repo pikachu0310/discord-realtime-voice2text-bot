@@ -19,6 +19,8 @@ import (
 const (
 	messageWindow    = 2 * time.Minute
 	silenceThreshold = 1 * time.Second
+	minSegmentDuration   = 400 * time.Millisecond
+	minAverageAmplitude  = 900
 )
 
 // Bot is the core Discord bot application.
@@ -214,6 +216,10 @@ func (b *Bot) consumeSegment(guildID, userID string, samples []int16) {
 	if len(samples) == 0 {
 		return
 	}
+	if !shouldSendSegment(samples) {
+		log.Printf("segment skipped due to low volume or short duration guild=%s user=%s", guildID, userID)
+		return
+	}
 	log.Printf("segment ready guild=%s user=%s samples=%d", guildID, userID, len(samples))
 	tmp, err := os.CreateTemp("", "segment-*.wav")
 	if err != nil {
@@ -324,19 +330,40 @@ func (r *ssrcResolver) Wait(ssrc uint32, timeout time.Duration) (string, bool) {
 		return userID, true
 	case <-timer.C:
 		r.mu.Lock()
-		waiters := r.waiters[ssrc]
-		for i, w := range waiters {
-			if w == ch {
-				waiters = append(waiters[:i], waiters[i+1:]...)
-				break
+		if waiters, ok := r.waiters[ssrc]; ok {
+			for i, w := range waiters {
+				if w == ch {
+					waiters = append(waiters[:i], waiters[i+1:]...)
+					break
+				}
 			}
-		}
-		if len(waiters) == 0 {
-			delete(r.waiters, ssrc)
-		} else {
-			r.waiters[ssrc] = waiters
+			if len(waiters) == 0 {
+				delete(r.waiters, ssrc)
+			} else {
+				r.waiters[ssrc] = waiters
+			}
 		}
 		r.mu.Unlock()
 		return "", false
 	}
+}
+
+func shouldSendSegment(samples []int16) bool {
+	if len(samples) == 0 {
+		return false
+	}
+	duration := time.Duration(len(samples)) * time.Second / (time.Duration(audio.SampleRate) * time.Duration(audio.Channels))
+	if duration < minSegmentDuration {
+		return false
+	}
+	var sum int64
+	for _, sample := range samples {
+		if sample < 0 {
+			sum -= int64(sample)
+		} else {
+			sum += int64(sample)
+		}
+	}
+	avg := sum / int64(len(samples))
+	return avg >= minAverageAmplitude
 }

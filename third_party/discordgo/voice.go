@@ -67,12 +67,17 @@ type VoiceConnection struct {
 	op2 voiceOP2
 
 	voiceSpeakingUpdateHandlers []VoiceSpeakingUpdateHandler
+	ssrcMappingHandlers         []SSRCMappingHandler
 	ssrcMap                     map[uint32]string
 }
 
 // VoiceSpeakingUpdateHandler type provides a function definition for the
 // VoiceSpeakingUpdate event
 type VoiceSpeakingUpdateHandler func(vc *VoiceConnection, vs *VoiceSpeakingUpdate)
+
+// SSRCMappingHandler is invoked whenever the voice connection learns or
+// replays an association between an SSRC and a Discord user ID.
+type SSRCMappingHandler func(vc *VoiceConnection, ssrc uint32, userID string)
 
 // Speaking sends a speaking notification to Discord over the voice websocket.
 // This must be sent as true prior to sending audio and should be set to false
@@ -221,6 +226,32 @@ func (v *VoiceConnection) AddHandler(h VoiceSpeakingUpdateHandler) {
 	v.voiceSpeakingUpdateHandlers = append(v.voiceSpeakingUpdateHandlers, h)
 }
 
+// AddSSRCMappingHandler registers a callback for SSRC mapping updates and
+// immediately replays already known mappings to the handler.
+func (v *VoiceConnection) AddSSRCMappingHandler(h SSRCMappingHandler) {
+	if h == nil {
+		return
+	}
+
+	v.Lock()
+	v.ssrcMappingHandlers = append(v.ssrcMappingHandlers, h)
+	var existing []struct {
+		ssrc   uint32
+		userID string
+	}
+	for ssrc, userID := range v.ssrcMap {
+		existing = append(existing, struct {
+			ssrc   uint32
+			userID string
+		}{ssrc: ssrc, userID: userID})
+	}
+	v.Unlock()
+
+	for _, entry := range existing {
+		h(v, entry.ssrc, entry.userID)
+	}
+}
+
 // VoiceSpeakingUpdate is a struct for a VoiceSpeakingUpdate event.
 type VoiceSpeakingUpdate struct {
 	UserID   string `json:"user_id"`
@@ -248,7 +279,12 @@ func (v *VoiceConnection) setSSRCMapping(ssrc uint32, userID string) {
 		v.ssrcMap = make(map[uint32]string)
 	}
 	v.ssrcMap[ssrc] = userID
+	handlers := append([]SSRCMappingHandler(nil), v.ssrcMappingHandlers...)
 	v.Unlock()
+
+	for _, handler := range handlers {
+		handler(v, ssrc, userID)
+	}
 }
 
 func (v *VoiceConnection) removeSSRCMapping(ssrc uint32) {

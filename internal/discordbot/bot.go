@@ -151,11 +151,14 @@ func (b *Bot) joinVoiceChannel(guildID, channelID string) error {
 	segmenter := audio.NewSegmenter(guildID, silenceThreshold, b.consumeSegment)
 	resolver := newSSRCResolver()
 	vc.LogLevel = discordgo.LogInformational
+	vc.AddSSRCMappingHandler(func(vc *discordgo.VoiceConnection, ssrc uint32, userID string) {
+		resolver.set(ssrc, userID)
+		log.Printf("voice ssrc mapping guild=%s user=%s ssrc=%d", vc.GuildID, userID, ssrc)
+	})
 	vc.AddHandler(func(vc *discordgo.VoiceConnection, vs *discordgo.VoiceSpeakingUpdate) {
 		if vs == nil {
 			return
 		}
-		resolver.set(uint32(vs.SSRC), vs.UserID)
 		log.Printf("voice speaking update guild=%s user=%s speaking=%t ssrc=%d", vc.GuildID, vs.UserID, vs.Speaking, vs.SSRC)
 	})
 	receiver := audio.NewReceiver(segmenter, resolver)

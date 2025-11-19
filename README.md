@@ -1,6 +1,6 @@
-# discord-whisper-transcriber
+# discord-realtime-voice2text-bot
 
-> 本リポジトリ（現在の `whisper-discord-bot`）を公開する際の提案名は **`discord-whisper-transcriber`** です。Bot の役割である「Discord で話された内容を即座に文字起こししてまとめる」ことを端的に表現しています。
+Discord の VC 音声をリアルタイムに faster-whisper へ送り、文字起こしをまとめて投稿する Go 製ボットです。
 
 ## できること（v1 機能一覧）
 
@@ -78,8 +78,8 @@ go run ./cmd/bot
 ビルド済バイナリを作る場合:
 
 ```fish
-go build -o bin/discord-whisper ./cmd/bot
-./bin/discord-whisper
+go build -o bin/discord-realtime-voice2text-bot ./cmd/bot
+./bin/discord-realtime-voice2text-bot
 ```
 
 ## テスト

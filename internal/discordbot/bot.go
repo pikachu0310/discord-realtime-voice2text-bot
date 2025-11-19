@@ -17,10 +17,10 @@ import (
 )
 
 const (
-	messageWindow    = 2 * time.Minute
-	silenceThreshold = 1 * time.Second
-	minSegmentDuration   = 400 * time.Millisecond
-	minAverageAmplitude  = 900
+	messageWindow       = 2 * time.Minute
+	silenceThreshold    = 1 * time.Second
+	minSegmentDuration  = 250 * time.Millisecond
+	minAverageAmplitude = 600
 )
 
 // Bot is the core Discord bot application.
@@ -216,8 +216,8 @@ func (b *Bot) consumeSegment(guildID, userID string, samples []int16) {
 	if len(samples) == 0 {
 		return
 	}
-	if !shouldSendSegment(samples) {
-		log.Printf("segment skipped due to low volume or short duration guild=%s user=%s", guildID, userID)
+	if ok, reason := shouldSendSegment(samples); !ok {
+		log.Printf("segment skipped guild=%s user=%s (%s)", guildID, userID, reason)
 		return
 	}
 	log.Printf("segment ready guild=%s user=%s samples=%d", guildID, userID, len(samples))
@@ -348,13 +348,13 @@ func (r *ssrcResolver) Wait(ssrc uint32, timeout time.Duration) (string, bool) {
 	}
 }
 
-func shouldSendSegment(samples []int16) bool {
+func shouldSendSegment(samples []int16) (bool, string) {
 	if len(samples) == 0 {
-		return false
+		return false, "no samples"
 	}
-	duration := time.Duration(len(samples)) * time.Second / (time.Duration(audio.SampleRate) * time.Duration(audio.Channels))
-	if duration < minSegmentDuration {
-		return false
+	actualDuration := time.Duration(len(samples)) * time.Second / (time.Duration(audio.SampleRate) * time.Duration(audio.Channels))
+	if actualDuration < minSegmentDuration {
+		return false, fmt.Sprintf("duration %.2fs < %.2fs", actualDuration.Seconds(), minSegmentDuration.Seconds())
 	}
 	var sum int64
 	for _, sample := range samples {
@@ -365,5 +365,8 @@ func shouldSendSegment(samples []int16) bool {
 		}
 	}
 	avg := sum / int64(len(samples))
-	return avg >= minAverageAmplitude
+	if avg < int64(minAverageAmplitude) {
+		return false, fmt.Sprintf("avg amplitude %d < %d", avg, minAverageAmplitude)
+	}
+	return true, ""
 }

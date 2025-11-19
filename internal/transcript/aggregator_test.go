@@ -1,6 +1,7 @@
 package transcript
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -45,5 +46,31 @@ func TestAggregatorAddLine(t *testing.T) {
 	}
 	if len(poster.sentMessages) != 2 {
 		t.Fatalf("expected new send after timeout, got %d", len(poster.sentMessages))
+	}
+}
+
+func TestAggregatorSplitsLongMessages(t *testing.T) {
+	poster := &mockPoster{}
+	agg := NewAggregator("chan", poster, time.Minute)
+
+	longLine := strings.Repeat("a", maxDiscordMessageLength+50)
+	if err := agg.AddLine(longLine); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(poster.sentMessages) != 2 {
+		t.Fatalf("expected 2 sends for long line, got %d", len(poster.sentMessages))
+	}
+
+	poster2 := &mockPoster{}
+	agg2 := NewAggregator("chan", poster2, time.Minute)
+	first := strings.Repeat("b", maxDiscordMessageLength-10)
+	if err := agg2.AddLine(first); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := agg2.AddLine(strings.Repeat("c", 1000)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(poster2.sentMessages) != 2 {
+		t.Fatalf("expected new send when limit exceeded, got %d", len(poster2.sentMessages))
 	}
 }

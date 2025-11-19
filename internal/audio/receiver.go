@@ -18,7 +18,9 @@ const (
 	Channels     = 1
 	frameSamples = 960 // 20ms at 48kHz
 	// waitForMappingTimeout defines how long to wait for SSRC mapping before dropping buffered audio.
-	waitForMappingTimeout = 30 * time.Second
+	waitForMappingTimeout = 5 * time.Minute
+	maxPendingDuration    = 30 * time.Second
+	maxPendingSamples     = SampleRate * Channels * int(maxPendingDuration/time.Second)
 )
 
 // SSRCResolver resolves SSRC values to Discord user IDs.
@@ -41,8 +43,9 @@ type Receiver struct {
 }
 
 type pendingStream struct {
-	frames  [][]int16
-	waiting bool
+	frames       [][]int16
+	totalSamples int
+	waiting      bool
 }
 
 // NewReceiver creates a Receiver.
@@ -197,6 +200,12 @@ func (r *Receiver) addPendingFrame(ssrc uint32, pcm []int16) bool {
 		r.pending[ssrc] = stream
 	}
 	stream.frames = append(stream.frames, pcm)
+	stream.totalSamples += len(pcm)
+	for stream.totalSamples > maxPendingSamples && len(stream.frames) > 0 {
+		removed := len(stream.frames[0])
+		stream.frames = stream.frames[1:]
+		stream.totalSamples -= removed
+	}
 	if stream.waiting {
 		return false
 	}

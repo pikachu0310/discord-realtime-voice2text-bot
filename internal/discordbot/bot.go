@@ -97,6 +97,7 @@ func (b *Bot) handleMessageCreate(s *discordgo.Session, m *discordgo.MessageCrea
 	if m.Author.Bot || m.GuildID == "" {
 		return
 	}
+	log.Printf("[guild=%s channel=%s] command from %s: %s", m.GuildID, m.ChannelID, m.Author.ID, m.Content)
 	switch strings.TrimSpace(m.Content) {
 	case "!join":
 		chID, err := b.findUserVoiceChannel(m.GuildID, m.Author.ID)
@@ -121,6 +122,7 @@ func (b *Bot) handleMessageCreate(s *discordgo.Session, m *discordgo.MessageCrea
 }
 
 func (b *Bot) joinVoiceChannel(guildID, channelID string) error {
+	log.Printf("joining voice channel guild=%s channel=%s", guildID, channelID)
 	b.voiceMu.Lock()
 	if handler, ok := b.activeVoiceListeners[guildID]; ok {
 		if handler.conn != nil && handler.conn.ChannelID == channelID {
@@ -139,7 +141,7 @@ func (b *Bot) joinVoiceChannel(guildID, channelID string) error {
 	}
 	b.voiceMu.Unlock()
 
-	vc, err := b.session.ChannelVoiceJoin(guildID, channelID, false, true)
+	vc, err := b.session.ChannelVoiceJoin(guildID, channelID, false, false)
 	if err != nil {
 		return err
 	}
@@ -151,9 +153,11 @@ func (b *Bot) joinVoiceChannel(guildID, channelID string) error {
 			return
 		}
 		resolver.set(uint32(vs.SSRC), vs.UserID)
+		log.Printf("voice speaking update guild=%s user=%s speaking=%t ssrc=%d", vc.GuildID, vs.UserID, vs.Speaking, vs.SSRC)
 	})
 	receiver := audio.NewReceiver(segmenter, resolver.resolve)
 	receiver.Start(ctx, vc)
+	log.Printf("voice receiver started guild=%s channel=%s", guildID, channelID)
 
 	b.voiceMu.Lock()
 	b.activeVoiceListeners[guildID] = &voiceHandler{
@@ -209,6 +213,7 @@ func (b *Bot) consumeSegment(guildID, userID string, samples []int16) {
 	if len(samples) == 0 {
 		return
 	}
+	log.Printf("segment ready guild=%s user=%s samples=%d", guildID, userID, len(samples))
 	tmp, err := os.CreateTemp("", "segment-*.wav")
 	if err != nil {
 		log.Printf("create temp file failed: %v", err)
@@ -227,6 +232,7 @@ func (b *Bot) consumeSegment(guildID, userID string, samples []int16) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
+	log.Printf("transcribing guild=%s user=%s file=%s", guildID, userID, tmp.Name())
 	text, err := b.whisperClient.Transcribe(ctx, tmp.Name())
 	if err != nil {
 		log.Printf("transcription failed: %v", err)
@@ -234,13 +240,16 @@ func (b *Bot) consumeSegment(guildID, userID string, samples []int16) {
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {
+		log.Printf("empty transcription guild=%s user=%s", guildID, userID)
 		return
 	}
 	displayName := b.displayName(guildID, userID)
 	line := fmt.Sprintf("%s: 「%s」", displayName, text)
 	if err := b.aggregator.AddLine(line); err != nil {
 		log.Printf("aggregator add line failed: %v", err)
+		return
 	}
+	log.Printf("posted transcription guild=%s line=%s", guildID, line)
 }
 
 func (b *Bot) displayName(guildID, userID string) string {

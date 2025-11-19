@@ -7,6 +7,8 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/joho/godotenv"
+
 	"github.com/pikachu0310/whisper-discord-bot/internal/config"
 	"github.com/pikachu0310/whisper-discord-bot/internal/discordbot"
 	"github.com/pikachu0310/whisper-discord-bot/internal/whisper"
@@ -14,6 +16,8 @@ import (
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+	loadDotEnv()
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -31,5 +35,16 @@ func main() {
 
 	if err := bot.Run(ctx); err != nil {
 		log.Fatalf("Bot が異常終了: %v", err)
+	}
+}
+
+func loadDotEnv() {
+	if _, err := os.Stat(".env"); err == nil {
+		if err := godotenv.Load(".env"); err != nil {
+			log.Printf(".env の読み込みに失敗しました: %v", err)
+		}
+		return
+	} else if !os.IsNotExist(err) {
+		log.Printf(".env の存在確認に失敗しました: %v", err)
 	}
 }

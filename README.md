@@ -19,21 +19,28 @@ docker run --publish 8000:8000 --volume ~/.cache/huggingface:/root/.cache/huggin
 
 サーバーは `http://localhost:8000` で待ち受けるため、`FWS_BASE_URL` を省略した場合はこの URL がデフォルトで利用されます。
 
-## 環境変数の設定（fish）
+## 環境変数の設定（.env 推奨）
+
+プロジェクト直下にある `.env.example` をコピーし、Bot のトークン等を記入します。
 
 ```fish
-set -x DISCORD_TOKEN "<Your Discord Bot Token>"
-set -x TRANSCRIPT_CHANNEL_ID "<投稿先テキストチャンネルID>"
-set -x FWS_BASE_URL "http://localhost:8000"  # 省略可能
+cp .env.example .env
 ```
+
+`.env` を編集して以下の値を設定します。
+
+- `DISCORD_TOKEN` : Discord Bot Token
+- `TRANSCRIPT_CHANNEL_ID` : 文字起こしを投稿するテキストチャンネル ID
+- `FWS_BASE_URL` : faster-whisper-server のエンドポイント（未設定時は `http://localhost:8000`）
+
+`go run ./cmd/bot` や `go build ./cmd/bot` は `.env` を自動で読み込むため、追加の環境変数設定は不要です。もちろん、必要があれば従来どおり `set -x` で上書きできます。
 
 ## 起動方法
 
-依存関係を取得した上で、以下のように Bot を起動します。ENV を一時的に与える場合も fish から実行してください。
+依存関係を取得後、単純に以下を実行してください。
 
 ```fish
-env DISCORD_TOKEN=$DISCORD_TOKEN TRANSCRIPT_CHANNEL_ID=$TRANSCRIPT_CHANNEL_ID \
-  FWS_BASE_URL=$FWS_BASE_URL go run ./cmd/bot
+go run ./cmd/bot
 ```
 
 ### ビルドだけ行う場合

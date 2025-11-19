@@ -148,6 +148,7 @@ func (b *Bot) joinVoiceChannel(guildID, channelID string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	segmenter := audio.NewSegmenter(guildID, silenceThreshold, b.consumeSegment)
 	resolver := newSSRCResolver()
+	vc.LogLevel = discordgo.LogInformational
 	vc.AddHandler(func(vc *discordgo.VoiceConnection, vs *discordgo.VoiceSpeakingUpdate) {
 		if vs == nil {
 			return
@@ -155,7 +156,7 @@ func (b *Bot) joinVoiceChannel(guildID, channelID string) error {
 		resolver.set(uint32(vs.SSRC), vs.UserID)
 		log.Printf("voice speaking update guild=%s user=%s speaking=%t ssrc=%d", vc.GuildID, vs.UserID, vs.Speaking, vs.SSRC)
 	})
-	receiver := audio.NewReceiver(segmenter, resolver.resolve)
+	receiver := audio.NewReceiver(segmenter, resolver)
 	receiver.Start(ctx, vc)
 	log.Printf("voice receiver started guild=%s channel=%s", guildID, channelID)
 
@@ -270,13 +271,15 @@ func (b *Bot) displayName(guildID, userID string) string {
 }
 
 type ssrcResolver struct {
-	mu      sync.RWMutex
+	mu      sync.Mutex
 	mapping map[uint32]string
+	waiters map[uint32][]chan string
 }
 
 func newSSRCResolver() *ssrcResolver {
 	return &ssrcResolver{
 		mapping: make(map[uint32]string),
+		waiters: make(map[uint32][]chan string),
 	}
 }
 
@@ -285,13 +288,55 @@ func (r *ssrcResolver) set(ssrc uint32, userID string) {
 		return
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.mapping[ssrc] = userID
+	waiters := r.waiters[ssrc]
+	delete(r.waiters, ssrc)
+	r.mu.Unlock()
+
+	for _, ch := range waiters {
+		ch <- userID
+		close(ch)
+	}
 }
 
-func (r *ssrcResolver) resolve(ssrc uint32) (string, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+func (r *ssrcResolver) Resolve(ssrc uint32) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	userID, ok := r.mapping[ssrc]
 	return userID, ok
+}
+
+func (r *ssrcResolver) Wait(ssrc uint32, timeout time.Duration) (string, bool) {
+	r.mu.Lock()
+	if userID, ok := r.mapping[ssrc]; ok {
+		r.mu.Unlock()
+		return userID, true
+	}
+	ch := make(chan string, 1)
+	r.waiters[ssrc] = append(r.waiters[ssrc], ch)
+	r.mu.Unlock()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case userID := <-ch:
+		return userID, true
+	case <-timer.C:
+		r.mu.Lock()
+		waiters := r.waiters[ssrc]
+		for i, w := range waiters {
+			if w == ch {
+				waiters = append(waiters[:i], waiters[i+1:]...)
+				break
+			}
+		}
+		if len(waiters) == 0 {
+			delete(r.waiters, ssrc)
+		} else {
+			r.waiters[ssrc] = waiters
+		}
+		r.mu.Unlock()
+		return "", false
+	}
 }

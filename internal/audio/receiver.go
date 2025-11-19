@@ -2,12 +2,13 @@ package audio
 
 import (
 	"context"
+	"errors"
 	"log"
-	"math"
 	"sync"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/pion/opus"
+	"layeh.com/gopus"
 )
 
 const (
@@ -16,26 +17,33 @@ const (
 	// Channels is the number of audio channels used during transcription.
 	Channels     = 1
 	frameSamples = 960 // 20ms at 48kHz
+	// waitForMappingTimeout defines how long to wait for SSRC mapping before dropping a packet.
+	waitForMappingTimeout = 2 * time.Second
 )
+
+// SSRCResolver resolves SSRC values to Discord user IDs.
+type SSRCResolver interface {
+	Resolve(ssrc uint32) (string, bool)
+	Wait(ssrc uint32, timeout time.Duration) (string, bool)
+}
 
 // Receiver consumes Discord Opus packets, decodes them to PCM, and feeds the segmenter.
 type Receiver struct {
-	segmenter    *Segmenter
-	logger       *log.Logger
-	userResolver func(uint32) (string, bool)
+	segmenter *Segmenter
+	logger    *log.Logger
+	resolver  SSRCResolver
+
+	unknownSSRC map[uint32]struct{}
+	mu          sync.Mutex
 }
 
 // NewReceiver creates a Receiver.
-func NewReceiver(segmenter *Segmenter, resolver func(uint32) (string, bool)) *Receiver {
-	if resolver == nil {
-		resolver = func(uint32) (string, bool) {
-			return "", false
-		}
-	}
+func NewReceiver(segmenter *Segmenter, resolver SSRCResolver) *Receiver {
 	return &Receiver{
-		segmenter:    segmenter,
-		logger:       log.Default(),
-		userResolver: resolver,
+		segmenter:   segmenter,
+		logger:      log.Default(),
+		resolver:    resolver,
+		unknownSSRC: make(map[uint32]struct{}),
 	}
 }
 
@@ -45,11 +53,34 @@ func (r *Receiver) Start(ctx context.Context, vc *discordgo.VoiceConnection) {
 		return
 	}
 
-	if vc.OpusRecv == nil {
-		vc.OpusRecv = make(chan *discordgo.Packet, 512)
+	if err := r.waitForOpusChannel(ctx, vc); err != nil {
+		r.logger.Printf("voice receiver aborted: %v", err)
+		return
 	}
 
 	go r.consume(ctx, vc)
+}
+
+func (r *Receiver) waitForOpusChannel(ctx context.Context, vc *discordgo.VoiceConnection) error {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	timeout := time.NewTimer(5 * time.Second)
+	defer timeout.Stop()
+
+	for {
+		if vc.OpusRecv != nil {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timeout.C:
+			return errors.New("voice connection did not expose OpusRecv channel in time")
+		case <-ticker.C:
+		}
+	}
 }
 
 func (r *Receiver) consume(ctx context.Context, vc *discordgo.VoiceConnection) {
@@ -57,20 +88,23 @@ func (r *Receiver) consume(ctx context.Context, vc *discordgo.VoiceConnection) {
 
 	var (
 		mu       sync.Mutex
-		decoders = make(map[uint32]*opus.Decoder)
+		decoders = make(map[uint32]*gopus.Decoder)
 	)
 
-	getDecoder := func(ssrc uint32) *opus.Decoder {
+	getDecoder := func(ssrc uint32) (*gopus.Decoder, error) {
 		mu.Lock()
 		defer mu.Unlock()
 
 		if dec, ok := decoders[ssrc]; ok {
-			return dec
+			return dec, nil
 		}
 
-		decoder := opus.NewDecoder()
-		decoders[ssrc] = &decoder
-		return &decoder
+		decoder, err := gopus.NewDecoder(SampleRate, Channels)
+		if err != nil {
+			return nil, err
+		}
+		decoders[ssrc] = decoder
+		return decoder, nil
 	}
 
 	for {
@@ -81,34 +115,72 @@ func (r *Receiver) consume(ctx context.Context, vc *discordgo.VoiceConnection) {
 			if !ok {
 				return
 			}
-			if pkt == nil || len(pkt.Opus) == 0 {
-				continue
-			}
-			userID, ok := r.userResolver(pkt.SSRC)
-			if !ok || userID == "" {
-				continue
-			}
-			decoder := getDecoder(pkt.SSRC)
-			floatPCM := make([]float32, frameSamples)
-			_, _, err := decoder.DecodeFloat32(pkt.Opus, floatPCM)
-			if err != nil {
-				r.logger.Printf("decode opus failed: %v", err)
-				continue
-			}
-			r.segmenter.AddSamples(userID, float32ToPCM(floatPCM))
+			r.handlePacket(pkt, getDecoder)
 		}
 	}
 }
 
-func float32ToPCM(src []float32) []int16 {
-	dst := make([]int16, len(src))
-	for i, sample := range src {
-		if sample > 1 {
-			sample = 1
-		} else if sample < -1 {
-			sample = -1
-		}
-		dst[i] = int16(math.Round(float64(sample * 32767)))
+func (r *Receiver) handlePacket(pkt *discordgo.Packet, getDecoder func(uint32) (*gopus.Decoder, error)) {
+	if pkt == nil || len(pkt.Opus) == 0 {
+		return
 	}
-	return dst
+
+	userID := pkt.UserID
+	if userID == "" && r.resolver != nil {
+		if resolved, ok := r.resolver.Resolve(pkt.SSRC); ok {
+			userID = resolved
+		}
+	}
+
+	if userID == "" {
+		r.deferPacket(pkt, getDecoder)
+		return
+	}
+
+	r.decodeAndDispatch(userID, pkt.Opus, pkt.SSRC, getDecoder)
+}
+
+func (r *Receiver) deferPacket(pkt *discordgo.Packet, getDecoder func(uint32) (*gopus.Decoder, error)) {
+	if r.resolver == nil {
+		r.logUnknownSSRC(pkt.SSRC)
+		return
+	}
+
+	payload := append([]byte(nil), pkt.Opus...)
+	ssrc := pkt.SSRC
+
+	go func() {
+		userID, ok := r.resolver.Wait(ssrc, waitForMappingTimeout)
+		if !ok || userID == "" {
+			r.logUnknownSSRC(ssrc)
+			return
+		}
+		r.decodeAndDispatch(userID, payload, ssrc, getDecoder)
+	}()
+}
+
+func (r *Receiver) decodeAndDispatch(userID string, opusFrame []byte, ssrc uint32, getDecoder func(uint32) (*gopus.Decoder, error)) {
+	decoder, err := getDecoder(ssrc)
+	if err != nil {
+		r.logger.Printf("create decoder failed: %v", err)
+		return
+	}
+
+	pcm, err := decoder.Decode(opusFrame, frameSamples, false)
+	if err != nil {
+		r.logger.Printf("decode opus failed: %v", err)
+		return
+	}
+
+	r.segmenter.AddSamples(userID, pcm)
+}
+
+func (r *Receiver) logUnknownSSRC(ssrc uint32) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, logged := r.unknownSSRC[ssrc]; logged {
+		return
+	}
+	r.unknownSSRC[ssrc] = struct{}{}
+	r.logger.Printf("no user mapping for SSRC=%d yet", ssrc)
 }

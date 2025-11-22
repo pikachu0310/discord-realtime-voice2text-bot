@@ -50,6 +50,14 @@ func (p *progressBuilder) Render() string {
 
 	var sections []string
 
+	var body []string
+	if p.input != "" {
+		body = append(body, "「"+p.input+"」")
+	}
+	if p.final != "" {
+		body = append(body, p.final)
+	}
+
 	var stepLines []string
 	for _, step := range p.steps {
 		if strings.TrimSpace(step) == "" {
@@ -61,13 +69,6 @@ func (p *progressBuilder) Render() string {
 		sections = append(sections, strings.Join(stepLines, "\n"))
 	}
 
-	var body []string
-	if p.input != "" {
-		body = append(body, "「"+p.input+"」")
-	}
-	if p.final != "" {
-		body = append(body, p.final)
-	}
 	if len(body) > 0 {
 		sections = append(sections, strings.Join(body, "\n"))
 	}

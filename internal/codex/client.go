@@ -91,12 +91,15 @@ type codexEventItem struct {
 	SessionID  string `json:"session_id,omitempty"`
 	Message    string `json:"message,omitempty"`
 	IsError    bool   `json:"is_error,omitempty"`
+	Type       string `json:"type,omitempty"`
+	Command    string `json:"command,omitempty"`
 }
 
 func parseCodexJSONLines(output string, onUpdate func(string)) (string, string) {
 	var (
 		textBuilder strings.Builder
 		sessionID   string
+		agentMsg    string
 	)
 
 	scanner := bufio.NewScanner(strings.NewReader(output))
@@ -131,40 +134,40 @@ func parseCodexJSONLines(output string, onUpdate func(string)) (string, string) 
 			}
 		}
 
+		if evt.Item != nil && evt.Item.Type == "agent_message" && strings.TrimSpace(evt.Item.Text) != "" {
+			agentMsg = evt.Item.Text
+		}
 		textBuilder.WriteString(extractText(evt))
+	}
+	if strings.TrimSpace(agentMsg) != "" {
+		return strings.TrimSpace(agentMsg), sessionID
 	}
 	return strings.TrimSpace(textBuilder.String()), sessionID
 }
 
 func summarizeEvent(evt codexEvent) string {
-	if evt.Type == "" {
+	if evt.Type == "" || evt.Type != "item.completed" || evt.Item == nil {
 		return ""
 	}
-	detail := eventDetail(evt)
-	if detail == "" {
-		return ""
-	}
-	withDetail := func(icon string) string {
-		if detail == "" {
-			return icon
+	switch evt.Item.Type {
+	case "reasoning":
+		if strings.TrimSpace(evt.Item.Text) == "" {
+			return ""
 		}
-		return fmt.Sprintf("%s %s", icon, detail)
-	}
-	switch {
-	case strings.HasPrefix(evt.Type, "session."):
-		return withDetail("🧵 セッション管理中")
-	case strings.HasPrefix(evt.Type, "turn."):
-		return withDetail("🧠 応答を生成中")
-	case strings.HasPrefix(evt.Type, "item."):
-		return withDetail("📄 出力を構築中")
-	case strings.HasPrefix(evt.Type, "response."):
-		return withDetail("✉️ 応答をまとめています")
-	case strings.HasPrefix(evt.Type, "thread."):
-		return withDetail("🪡 スレッド処理中")
-	case strings.HasPrefix(evt.Type, "error"):
-		return withDetail("⚠️ エラーを検出")
+		return fmt.Sprintf(":thinking: %s", strings.TrimSpace(evt.Item.Text))
+	case "command_execution":
+		if strings.TrimSpace(evt.Item.Command) == "" {
+			return ""
+		}
+		return fmt.Sprintf(":computer: `%s`", strings.TrimSpace(evt.Item.Command))
+	case "agent_message":
+		return ""
 	default:
-		return detail
+		detail := eventDetail(evt)
+		if detail == "" {
+			return ""
+		}
+		return fmt.Sprintf(":thinking: %s", detail)
 	}
 }
 
@@ -268,19 +271,11 @@ func anyToString(v any) string {
 func extractText(evt codexEvent) string {
 	var b strings.Builder
 
-	if evt.Item != nil {
+	if evt.Item != nil && evt.Item.Type == "agent_message" {
 		appendTextLike(&b, evt.Item.Text)
-		appendTextLike(&b, evt.Item.Message)
-		appendAnyText(&b, evt.Item.Delta)
 		appendAnyText(&b, evt.Item.OutputText)
 		appendAnyText(&b, evt.Item.Content)
-	}
-	if evt.Response != nil {
-		appendAnyText(&b, evt.Response.OutputText)
-	}
-	appendTextLike(&b, evt.Result)
-	if evt.Error != nil && evt.Error.Message != "" {
-		appendTextLike(&b, "エラー: "+evt.Error.Message)
+		appendTextLike(&b, evt.Item.Message)
 	}
 	return b.String()
 }

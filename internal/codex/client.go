@@ -141,6 +141,9 @@ func summarizeEvent(evt codexEvent) string {
 		return ""
 	}
 	detail := eventDetail(evt)
+	if detail == "" {
+		return ""
+	}
 	withDetail := func(icon string) string {
 		if detail == "" {
 			return icon

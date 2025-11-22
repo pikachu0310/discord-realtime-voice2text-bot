@@ -10,6 +10,7 @@ type progressBuilder struct {
 	input    string
 	steps    []string
 	final    string
+	done     bool
 	mu       sync.Mutex
 	OnUpdate func(string)
 }
@@ -40,29 +41,43 @@ func (p *progressBuilder) SetFinal(final string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.final = strings.TrimSpace(final)
+	p.done = true
 }
 
 func (p *progressBuilder) Render() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	var b strings.Builder
+	var sections []string
 
-	if p.input != "" {
-		b.WriteString("入力: ")
-		b.WriteString(p.input)
-		b.WriteString("\n")
-	}
-	b.WriteString(p.model)
-	b.WriteString(" が考え中...")
-
+	var stepLines []string
 	for _, step := range p.steps {
-		b.WriteString("\n")
-		b.WriteString(step)
+		if strings.TrimSpace(step) == "" {
+			continue
+		}
+		stepLines = append(stepLines, step)
+	}
+	if len(stepLines) > 0 {
+		sections = append(sections, strings.Join(stepLines, "\n"))
+	}
+
+	var body []string
+	if p.input != "" {
+		body = append(body, "「"+p.input+"」")
 	}
 	if p.final != "" {
-		b.WriteString("\n\n")
-		b.WriteString(p.final)
+		body = append(body, p.final)
 	}
-	return b.String()
+	if len(body) > 0 {
+		sections = append(sections, strings.Join(body, "\n"))
+	}
+
+	out := strings.Join(sections, "\n\n")
+	if out == "" {
+		return ""
+	}
+	if !p.done {
+		out += " :thinking:"
+	}
+	return out
 }

@@ -333,7 +333,14 @@ func (m *Manager) sendAndReply(targetID, sessionID, content string, progress *pr
 	if reasoning == "" {
 		reasoning = "default"
 	}
-	progress.AddStep(fmt.Sprintf("🚀 実行開始 session=%s model=%s reasoning=%s", sessionID, m.codex.Model, reasoning))
+	sessionLabel := sessionID
+	if strings.TrimLeft(sessionLabel, "0") != "" {
+		sessionLabel = strings.TrimLeft(sessionLabel, "0")
+	}
+	if sessionLabel == "" {
+		sessionLabel = "new"
+	}
+	progress.AddStep(fmt.Sprintf("🚀 実行開始 (model: %s / reasoning: %s / session: %s)", m.codex.Model, reasoning, sessionLabel))
 	if progress.OnUpdate != nil {
 		progress.OnUpdate(progress.Render())
 	}
@@ -350,8 +357,9 @@ func (m *Manager) sendAndReply(targetID, sessionID, content string, progress *pr
 	reply, newSessionID, err := m.codex.Send(ctx, sessionID, content, update)
 	if err != nil {
 		log.Printf("codex send failed: %v", err)
+		progress.SetFinal(fmt.Sprintf("⚠️ Codex への送信に失敗しました: %v", err))
 		if progress.OnUpdate != nil {
-			progress.OnUpdate(fmt.Sprintf("⚠️ Codex への送信に失敗しました: %v", err))
+			progress.OnUpdate(progress.Render())
 		}
 		return err
 	}

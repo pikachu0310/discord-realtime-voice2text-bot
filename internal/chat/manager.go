@@ -18,6 +18,7 @@ const (
 	commandNameStart  = "start"
 	commandNameReset  = "reset"
 	commandNameThread = "thread"
+	optionNameVerbose = "verbose"
 
 	threadArchiveMinutes = 1440
 )
@@ -61,6 +62,12 @@ func (m *Manager) RegisterCommands() error {
 					Description: "送信するメッセージ",
 					Required:    true,
 				},
+				{
+					Type:        discordgo.ApplicationCommandOptionBoolean,
+					Name:        optionNameVerbose,
+					Description: "進捗ログを詳細表示する（デフォルト: 最新行のみ）",
+					Required:    false,
+				},
 			},
 		},
 		{
@@ -72,6 +79,12 @@ func (m *Manager) RegisterCommands() error {
 					Name:        "message",
 					Description: "送信するメッセージ",
 					Required:    true,
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionBoolean,
+					Name:        optionNameVerbose,
+					Description: "進捗ログを詳細表示する（デフォルト: 最新行のみ）",
+					Required:    false,
 				},
 			},
 		},
@@ -113,12 +126,23 @@ func (m *Manager) HandleInteraction(ic *discordgo.InteractionCreate) {
 		if len(data.Options) == 0 {
 			return
 		}
-		msg := strings.TrimSpace(data.Options[0].StringValue())
+		var (
+			msg     string
+			verbose bool
+		)
+		for _, opt := range data.Options {
+			switch opt.Name {
+			case "message":
+				msg = strings.TrimSpace(opt.StringValue())
+			case optionNameVerbose:
+				verbose = opt.BoolValue()
+			}
+		}
 		if msg == "" {
 			m.followup(ic, "空のメッセージは送信できません。", true)
 			return
 		}
-		go m.handleChatCommand(ic, msg)
+		go m.handleChatCommand(ic, msg, verbose)
 	case commandNameReset:
 		go m.handleResetCommand(ic)
 	case commandNameThread:
@@ -175,6 +199,7 @@ func (m *Manager) ChatInChannel(channelID, content string) (string, error) {
 	sessionID := m.store.GetChannel(channelID)
 
 	progress := newProgress("Codex").WithInput(content)
+	progress.SetVerbose(false)
 	var final string
 	progress.OnUpdate = func(text string) {
 		final = text
@@ -200,7 +225,7 @@ func (m *Manager) ChatInChannel(channelID, content string) (string, error) {
 	return final, nil
 }
 
-func (m *Manager) handleChatCommand(ic *discordgo.InteractionCreate, content string) {
+func (m *Manager) handleChatCommand(ic *discordgo.InteractionCreate, content string, verbose bool) {
 	// acknowledge quickly
 	if err := m.session.InteractionRespond(ic.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
@@ -215,6 +240,7 @@ func (m *Manager) handleChatCommand(ic *discordgo.InteractionCreate, content str
 	channelID := ic.ChannelID
 	sessionID := m.store.GetChannel(channelID)
 	progress := newProgress("Codex").WithInput(content)
+	progress.SetVerbose(verbose)
 
 	progress.OnUpdate = m.makeProgressUpdater(channelID, ic.Interaction, "")
 	progress.OnUpdate(progress.Render())

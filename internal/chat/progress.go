@@ -11,6 +11,7 @@ type progressBuilder struct {
 	steps    []string
 	final    string
 	done     bool
+	verbose  bool
 	mu       sync.Mutex
 	OnUpdate func(string)
 }
@@ -44,6 +45,12 @@ func (p *progressBuilder) SetFinal(final string) {
 	p.done = true
 }
 
+func (p *progressBuilder) SetVerbose(verbose bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.verbose = verbose
+}
+
 func (p *progressBuilder) Render() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -66,7 +73,13 @@ func (p *progressBuilder) Render() string {
 		stepLines = append(stepLines, step)
 	}
 	if len(stepLines) > 0 {
-		sections = append(sections, strings.Join(stepLines, "\n"))
+		if p.verbose || !p.done {
+			if p.verbose {
+				sections = append(sections, strings.Join(stepLines, "\n"))
+			} else {
+				sections = append(sections, stepLines[len(stepLines)-1])
+			}
+		}
 	}
 
 	if len(body) > 0 {
@@ -76,9 +89,6 @@ func (p *progressBuilder) Render() string {
 	out := strings.Join(sections, "\n\n")
 	if out == "" {
 		return ""
-	}
-	if !p.done {
-		out += " :thinking:"
 	}
 	return out
 }

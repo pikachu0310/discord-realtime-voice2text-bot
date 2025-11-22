@@ -8,7 +8,8 @@ import (
 const (
 	DefaultFWSBaseURL = "http://localhost:8000"
 	DefaultStatePath  = "data/codex_sessions.json"
-	DefaultCodexModel = "gpt-5-minimal"
+	DefaultCodexModel = "gpt-5.1"
+	DefaultReasoning  = "minimal"
 )
 
 // Config represents runtime configuration from environment variables.
@@ -19,6 +20,7 @@ type Config struct {
 	StatePath           string
 	GeminiAPIKey        string
 	CodexModel          string
+	ReasoningEffort     string
 }
 
 // Load reads configuration from environment variables and validates it.
@@ -30,6 +32,7 @@ func Load() (Config, error) {
 		StatePath:           os.Getenv("CODEX_STATE_PATH"),
 		GeminiAPIKey:        os.Getenv("GEMINI_API_KEY"),
 		CodexModel:          os.Getenv("CODEX_MODEL"),
+		ReasoningEffort:     os.Getenv("CODEX_REASONING_EFFORT"),
 	}
 
 	if cfg.FWSBaseURL == "" {
@@ -40,6 +43,9 @@ func Load() (Config, error) {
 	}
 	if cfg.CodexModel == "" {
 		cfg.CodexModel = DefaultCodexModel
+	}
+	if cfg.ReasoningEffort == "" {
+		cfg.ReasoningEffort = DefaultReasoning
 	}
 
 	var missing []string

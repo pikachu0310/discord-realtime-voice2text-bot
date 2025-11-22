@@ -40,7 +40,8 @@
 - `DISCORD_TOKEN`, `TRANSCRIPT_CHANNEL_ID`
 - `FWS_BASE_URL`（デフォルト `http://localhost:8000`）
 - `CODEX_STATE_PATH`（デフォルト `data/codex_sessions.json`）
-- `CODEX_MODEL`（デフォルト `gpt-5-minimal`）
+- `CODEX_MODEL`（デフォルト `gpt-5.1`）
+- `CODEX_REASONING_EFFORT`（デフォルト `minimal`。空なら Codex デフォルト）
 - `GEMINI_API_KEY`（任意、スレッド名生成用）
 
 ## テスト・ビルド

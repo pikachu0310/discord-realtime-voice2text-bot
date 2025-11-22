@@ -32,7 +32,10 @@ func main() {
 	}
 
 	namer := codex.NewThreadNamer(cfg.GeminiAPIKey)
-	codexClient := codex.Client{Model: cfg.CodexModel}
+	codexClient := codex.Client{
+		Model:           cfg.CodexModel,
+		ReasoningEffort: cfg.ReasoningEffort,
+	}
 
 	bot, err := discordbot.New(cfg.DiscordToken, cfg.TranscriptChannelID, whisperClient, store, namer, codexClient)
 	if err != nil {

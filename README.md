@@ -42,7 +42,8 @@ docker run --publish 8000:8000 \
 | `TRANSCRIPT_CHANNEL_ID` | ✅ | - | 字幕をまとめて投稿するテキストチャンネル ID |
 | `FWS_BASE_URL` | ❌ | `http://localhost:8000` | faster-whisper-server のベース URL |
 | `CODEX_STATE_PATH` | ❌ | `data/codex_sessions.json` | Codex セッション ID 永続化ファイル |
-| `CODEX_MODEL` | ❌ | `gpt-5-minimal` | Codex に渡すモデル名 |
+| `CODEX_MODEL` | ❌ | `gpt-5.1` | Codex に渡すモデル名 |
+| `CODEX_REASONING_EFFORT` | ❌ | `minimal` | Codex の reasoning effort（設定が無ければ Codex デフォルト） |
 | `GEMINI_API_KEY` | ❌ | - | スレッド名生成に使用（未設定なら日時+IDで命名） |
 
 Fish で直接設定する例:

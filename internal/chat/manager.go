@@ -329,7 +329,11 @@ func (m *Manager) sendAndReply(targetID, sessionID, content string, progress *pr
 		progress = newProgress("Codex")
 	}
 
-	progress.AddStep(fmt.Sprintf("🚀 実行開始 session=%s model=%s", sessionID, m.codex.Model))
+	reasoning := m.codex.ReasoningEffort
+	if reasoning == "" {
+		reasoning = "default"
+	}
+	progress.AddStep(fmt.Sprintf("🚀 実行開始 session=%s model=%s reasoning=%s", sessionID, m.codex.Model, reasoning))
 	if progress.OnUpdate != nil {
 		progress.OnUpdate(progress.Render())
 	}

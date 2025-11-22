@@ -14,7 +14,8 @@ import (
 
 // Client runs the Codex CLI to continue or start a session.
 type Client struct {
-	Model string
+	Model           string
+	ReasoningEffort string
 }
 
 // Send executes `codex exec` (or `exec resume`) and returns the assistant reply text and session ID.
@@ -24,6 +25,9 @@ func (c Client) Send(ctx context.Context, sessionID, prompt string, onUpdate fun
 	args := []string{"exec"}
 	if c.Model != "" {
 		args = append(args, "--model", c.Model)
+	}
+	if c.ReasoningEffort != "" {
+		args = append(args, "-c", fmt.Sprintf("reasoning.effort=%s", c.ReasoningEffort))
 	}
 	args = append(args,
 		"--json",

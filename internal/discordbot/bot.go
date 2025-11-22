@@ -4,47 +4,31 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/bwmarrin/discordgo"
 
-	"github.com/pikachu0310/whisper-discord-bot/internal/audio"
-	"github.com/pikachu0310/whisper-discord-bot/internal/transcript"
+	"github.com/pikachu0310/whisper-discord-bot/internal/chat"
+	"github.com/pikachu0310/whisper-discord-bot/internal/codex"
+	"github.com/pikachu0310/whisper-discord-bot/internal/voice"
 	"github.com/pikachu0310/whisper-discord-bot/internal/whisper"
 )
 
-const (
-	messageWindow       = 2 * time.Minute
-	silenceThreshold    = 1 * time.Second
-	minSegmentDuration  = 250 * time.Millisecond
-	minAverageAmplitude = 600
-)
-
-// Bot is the core Discord bot application.
+// Bot wires event handlers and sub-systems (voice transcription, chat, etc).
 type Bot struct {
-	session              *discordgo.Session
-	whisperClient        *whisper.Client
-	aggregator           *transcript.Aggregator
-	transcriptChannelID  string
-	voiceMu              sync.Mutex
-	activeVoiceListeners map[string]*voiceHandler
+	session *discordgo.Session
+	voice   *voice.Manager
+	chat    *chat.Manager
 }
 
-type voiceHandler struct {
-	conn      *discordgo.VoiceConnection
-	cancel    context.CancelFunc
-	segmenter *audio.Segmenter
-	resolver  *ssrcResolver
-}
-
-// New creates a ready-to-run bot.
-func New(token, transcriptChannelID string, whisperClient *whisper.Client) (*Bot, error) {
+// New creates a ready-to-run bot with voice transcription enabled.
+func New(token, transcriptChannelID string, whisperClient *whisper.Client, store *codex.Store, namer *codex.ThreadNamer, codexClient codex.Client) (*Bot, error) {
 	session, err := discordgo.New("Bot " + token)
 	if err != nil {
 		return nil, fmt.Errorf("create discord session: %w", err)
+	}
+	if whisperClient == nil {
+		return nil, fmt.Errorf("whisper client is nil")
 	}
 	session.StateEnabled = true
 	session.Identify.Intents = discordgo.IntentsGuilds |
@@ -53,14 +37,15 @@ func New(token, transcriptChannelID string, whisperClient *whisper.Client) (*Bot
 		discordgo.IntentsMessageContent
 
 	bot := &Bot{
-		session:              session,
-		whisperClient:        whisperClient,
-		transcriptChannelID:  transcriptChannelID,
-		activeVoiceListeners: make(map[string]*voiceHandler),
+		session: session,
+		voice:   voice.NewManager(session, whisperClient, transcriptChannelID),
+		chat:    chat.NewManager(session, store, namer, codexClient),
 	}
-	bot.aggregator = transcript.NewAggregator(transcriptChannelID, transcript.DiscordPoster{Session: session}, messageWindow)
 
+	session.AddHandler(bot.onReady)
 	session.AddHandler(bot.handleMessageCreate)
+	session.AddHandler(bot.handleInteraction)
+	session.AddHandler(bot.handleThreadMessage)
 
 	return bot, nil
 }
@@ -74,129 +59,76 @@ func (b *Bot) Run(ctx context.Context) error {
 	defer b.session.Close()
 
 	<-ctx.Done()
-	b.shutdown()
+	b.chat.Close()
+	b.voice.Shutdown()
 	return nil
-}
-
-func (b *Bot) shutdown() {
-	b.voiceMu.Lock()
-	defer b.voiceMu.Unlock()
-
-	for guildID, handler := range b.activeVoiceListeners {
-		handler.cancel()
-		if handler.segmenter != nil {
-			handler.segmenter.Stop()
-		}
-		if handler.conn != nil {
-			handler.conn.Disconnect()
-			handler.conn.Close()
-		}
-		delete(b.activeVoiceListeners, guildID)
-	}
 }
 
 func (b *Bot) handleMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if m.Author.Bot || m.GuildID == "" {
 		return
 	}
-	log.Printf("[guild=%s channel=%s] command from %s: %s", m.GuildID, m.ChannelID, m.Author.ID, m.Content)
-	switch strings.TrimSpace(m.Content) {
-	case "!join":
-		chID, err := b.findUserVoiceChannel(m.GuildID, m.Author.ID)
+}
+
+func (b *Bot) handleInteraction(s *discordgo.Session, ic *discordgo.InteractionCreate) {
+	if ic == nil || ic.Type != discordgo.InteractionApplicationCommand {
+		return
+	}
+
+	switch ic.ApplicationCommandData().Name {
+	case "join":
+		chID, err := b.findUserVoiceChannel(ic.GuildID, ic.Member.User.ID)
 		if err != nil {
-			s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("VC を特定できません: %v", err))
+			b.respondEphemeral(ic, fmt.Sprintf("VC を特定できません: %v", err))
 			return
 		}
-		if err := b.joinVoiceChannel(m.GuildID, chID); err != nil {
-			log.Printf("failed to join voice: %v", err)
-			s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("参加に失敗しました: %v", err))
+		if err := b.voice.Join(ic.GuildID, ic.Member.User.ID); err != nil {
+			b.respondEphemeral(ic, fmt.Sprintf("参加に失敗しました: %v", err))
 			return
 		}
-		s.ChannelMessageSend(m.ChannelID, "参加しました。")
-	case "!leave":
-		if err := b.leaveVoiceChannel(m.GuildID); err != nil {
-			log.Printf("failed to leave voice: %v", err)
-			s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("退出に失敗しました: %v", err))
+		b.respond(ic, fmt.Sprintf("参加しました (チャンネル: <#%s>)", chID))
+	case "leave":
+		if err := b.voice.Leave(ic.GuildID); err != nil {
+			b.respondEphemeral(ic, fmt.Sprintf("退出に失敗しました: %v", err))
 			return
 		}
-		s.ChannelMessageSend(m.ChannelID, "退出しました。")
+		b.respond(ic, "退出しました。")
+	default:
+		b.chat.HandleInteraction(ic)
 	}
 }
 
-func (b *Bot) joinVoiceChannel(guildID, channelID string) error {
-	log.Printf("joining voice channel guild=%s channel=%s", guildID, channelID)
-	b.voiceMu.Lock()
-	if handler, ok := b.activeVoiceListeners[guildID]; ok {
-		if handler.conn != nil && handler.conn.ChannelID == channelID {
-			b.voiceMu.Unlock()
-			return nil
-		}
-		handler.cancel()
-		if handler.segmenter != nil {
-			handler.segmenter.Stop()
-		}
-		if handler.conn != nil {
-			handler.conn.Disconnect()
-			handler.conn.Close()
-		}
-		delete(b.activeVoiceListeners, guildID)
+func (b *Bot) handleThreadMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
+	if m.Author.Bot {
+		return
 	}
-	b.voiceMu.Unlock()
-
-	vc, err := b.session.ChannelVoiceJoin(guildID, channelID, false, false)
-	if err != nil {
-		return err
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	segmenter := audio.NewSegmenter(guildID, silenceThreshold, b.consumeSegment)
-	resolver := newSSRCResolver()
-	vc.LogLevel = discordgo.LogInformational
-	vc.AddSSRCMappingHandler(func(vc *discordgo.VoiceConnection, ssrc uint32, userID string) {
-		resolver.set(ssrc, userID)
-		log.Printf("voice ssrc mapping guild=%s user=%s ssrc=%d", vc.GuildID, userID, ssrc)
-	})
-	vc.AddHandler(func(vc *discordgo.VoiceConnection, vs *discordgo.VoiceSpeakingUpdate) {
-		if vs == nil {
-			return
-		}
-		log.Printf("voice speaking update guild=%s user=%s speaking=%t ssrc=%d", vc.GuildID, vs.UserID, vs.Speaking, vs.SSRC)
-	})
-	receiver := audio.NewReceiver(segmenter, resolver)
-	receiver.Start(ctx, vc)
-	log.Printf("voice receiver started guild=%s channel=%s", guildID, channelID)
-
-	b.voiceMu.Lock()
-	b.activeVoiceListeners[guildID] = &voiceHandler{
-		conn:      vc,
-		cancel:    cancel,
-		segmenter: segmenter,
-		resolver:  resolver,
-	}
-	b.voiceMu.Unlock()
-
-	return nil
+	b.chat.HandleThreadMessage(m)
 }
 
-func (b *Bot) leaveVoiceChannel(guildID string) error {
-	b.voiceMu.Lock()
-	handler, ok := b.activeVoiceListeners[guildID]
-	if ok {
-		delete(b.activeVoiceListeners, guildID)
-	}
-	b.voiceMu.Unlock()
-	if !ok {
-		return fmt.Errorf("ボイスチャンネルに接続していません")
+func (b *Bot) onReady(s *discordgo.Session, r *discordgo.Ready) {
+	if err := b.chat.RegisterCommands(); err != nil {
+		log.Printf("failed to register commands: %v", err)
+	} else {
+		log.Printf("slash commands registered (app_id=%s)", s.State.User.ID)
 	}
 
-	handler.cancel()
-	if handler.segmenter != nil {
-		handler.segmenter.Stop()
+	// Register voice commands join/leave
+	appID := s.State.User.ID
+	commands := []*discordgo.ApplicationCommand{
+		{
+			Name:        "join",
+			Description: "あなたがいる VC へ参加します",
+		},
+		{
+			Name:        "leave",
+			Description: "VC から退出します",
+		},
 	}
-	if handler.conn != nil {
-		handler.conn.Disconnect()
-		handler.conn.Close()
+	for _, cmd := range commands {
+		if _, err := s.ApplicationCommandCreate(appID, "", cmd); err != nil {
+			log.Printf("failed to register command %s: %v", cmd.Name, err)
+		}
 	}
-	return nil
 }
 
 func (b *Bot) findUserVoiceChannel(guildID, userID string) (string, error) {
@@ -215,161 +147,27 @@ func (b *Bot) findUserVoiceChannel(guildID, userID string) (string, error) {
 	return "", fmt.Errorf("ユーザーは VC に接続していません")
 }
 
-func (b *Bot) consumeSegment(guildID, userID string, samples []int16) {
-	if len(samples) == 0 {
-		return
-	}
-	if ok, reason := shouldSendSegment(samples); !ok {
-		log.Printf("segment skipped guild=%s user=%s (%s)", guildID, userID, reason)
-		return
-	}
-	log.Printf("segment ready guild=%s user=%s samples=%d", guildID, userID, len(samples))
-	tmp, err := os.CreateTemp("", "segment-*.wav")
-	if err != nil {
-		log.Printf("create temp file failed: %v", err)
-		return
-	}
-	defer func() {
-		tmp.Close()
-		os.Remove(tmp.Name())
-	}()
-
-	if err := audio.WritePCM16ToWAV(tmp.Name(), samples, audio.SampleRate, audio.Channels); err != nil {
-		log.Printf("write wav failed: %v", err)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-
-	log.Printf("transcribing guild=%s user=%s file=%s", guildID, userID, tmp.Name())
-	text, err := b.whisperClient.Transcribe(ctx, tmp.Name())
-	if err != nil {
-		log.Printf("transcription failed: %v", err)
-		return
-	}
-	text = strings.TrimSpace(text)
-	if text == "" {
-		log.Printf("empty transcription guild=%s user=%s", guildID, userID)
-		return
-	}
-	displayName := b.displayName(guildID, userID)
-	line := fmt.Sprintf("%s: 「%s」", displayName, text)
-	if err := b.aggregator.AddLine(line); err != nil {
-		log.Printf("aggregator add line failed: %v", err)
-		return
-	}
-	log.Printf("posted transcription guild=%s line=%s", guildID, line)
-}
-
-func (b *Bot) displayName(guildID, userID string) string {
-	member, err := b.session.State.Member(guildID, userID)
-	if err != nil || member == nil {
-		member, err = b.session.GuildMember(guildID, userID)
-		if err != nil || member == nil {
-			return userID
-		}
-	}
-	if member.Nick != "" {
-		return member.Nick
-	}
-	if member.User != nil && member.User.Username != "" {
-		return member.User.Username
-	}
-	return userID
-}
-
-type ssrcResolver struct {
-	mu      sync.Mutex
-	mapping map[uint32]string
-	waiters map[uint32][]chan string
-}
-
-func newSSRCResolver() *ssrcResolver {
-	return &ssrcResolver{
-		mapping: make(map[uint32]string),
-		waiters: make(map[uint32][]chan string),
+func (b *Bot) respond(ic *discordgo.InteractionCreate, content string) {
+	err := b.session.InteractionRespond(ic.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Content: content,
+		},
+	})
+	if err != nil && !strings.Contains(err.Error(), "Interaction has already been acknowledged") {
+		log.Printf("respond failed: %v", err)
 	}
 }
 
-func (r *ssrcResolver) set(ssrc uint32, userID string) {
-	if userID == "" {
-		return
+func (b *Bot) respondEphemeral(ic *discordgo.InteractionCreate, content string) {
+	err := b.session.InteractionRespond(ic.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Content: content,
+			Flags:   discordgo.MessageFlagsEphemeral,
+		},
+	})
+	if err != nil && !strings.Contains(err.Error(), "Interaction has already been acknowledged") {
+		log.Printf("respond failed: %v", err)
 	}
-	r.mu.Lock()
-	r.mapping[ssrc] = userID
-	waiters := r.waiters[ssrc]
-	delete(r.waiters, ssrc)
-	r.mu.Unlock()
-
-	for _, ch := range waiters {
-		ch <- userID
-		close(ch)
-	}
-}
-
-func (r *ssrcResolver) Resolve(ssrc uint32) (string, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	userID, ok := r.mapping[ssrc]
-	return userID, ok
-}
-
-func (r *ssrcResolver) Wait(ssrc uint32, timeout time.Duration) (string, bool) {
-	r.mu.Lock()
-	if userID, ok := r.mapping[ssrc]; ok {
-		r.mu.Unlock()
-		return userID, true
-	}
-	ch := make(chan string, 1)
-	r.waiters[ssrc] = append(r.waiters[ssrc], ch)
-	r.mu.Unlock()
-
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-
-	select {
-	case userID := <-ch:
-		return userID, true
-	case <-timer.C:
-		r.mu.Lock()
-		if waiters, ok := r.waiters[ssrc]; ok {
-			for i, w := range waiters {
-				if w == ch {
-					waiters = append(waiters[:i], waiters[i+1:]...)
-					break
-				}
-			}
-			if len(waiters) == 0 {
-				delete(r.waiters, ssrc)
-			} else {
-				r.waiters[ssrc] = waiters
-			}
-		}
-		r.mu.Unlock()
-		return "", false
-	}
-}
-
-func shouldSendSegment(samples []int16) (bool, string) {
-	if len(samples) == 0 {
-		return false, "no samples"
-	}
-	actualDuration := time.Duration(len(samples)) * time.Second / (time.Duration(audio.SampleRate) * time.Duration(audio.Channels))
-	if actualDuration < minSegmentDuration {
-		return false, fmt.Sprintf("duration %.2fs < %.2fs", actualDuration.Seconds(), minSegmentDuration.Seconds())
-	}
-	var sum int64
-	for _, sample := range samples {
-		if sample < 0 {
-			sum -= int64(sample)
-		} else {
-			sum += int64(sample)
-		}
-	}
-	avg := sum / int64(len(samples))
-	if avg < int64(minAverageAmplitude) {
-		return false, fmt.Sprintf("avg amplitude %d < %d", avg, minAverageAmplitude)
-	}
-	return true, ""
 }

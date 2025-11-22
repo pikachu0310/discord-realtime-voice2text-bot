@@ -9,6 +9,7 @@ import (
 
 	"github.com/joho/godotenv"
 
+	"github.com/pikachu0310/whisper-discord-bot/internal/codex"
 	"github.com/pikachu0310/whisper-discord-bot/internal/config"
 	"github.com/pikachu0310/whisper-discord-bot/internal/discordbot"
 	"github.com/pikachu0310/whisper-discord-bot/internal/whisper"
@@ -25,7 +26,15 @@ func main() {
 	}
 
 	whisperClient := whisper.New(cfg.FWSBaseURL)
-	bot, err := discordbot.New(cfg.DiscordToken, cfg.TranscriptChannelID, whisperClient)
+	store, err := codex.NewStore(cfg.StatePath)
+	if err != nil {
+		log.Fatalf("Codex セッションストアの初期化に失敗: %v", err)
+	}
+
+	namer := codex.NewThreadNamer(cfg.GeminiAPIKey)
+	codexClient := codex.Client{Model: cfg.CodexModel}
+
+	bot, err := discordbot.New(cfg.DiscordToken, cfg.TranscriptChannelID, whisperClient, store, namer, codexClient)
 	if err != nil {
 		log.Fatalf("Bot の初期化に失敗: %v", err)
 	}

@@ -68,6 +68,7 @@ type codexEvent struct {
 	Type      string             `json:"type"`
 	Session   *codexEventSession `json:"session,omitempty"`
 	SessionID string             `json:"session_id,omitempty"`
+	ThreadID  string             `json:"thread_id,omitempty"`
 	Item      *codexEventItem    `json:"item,omitempty"`
 	Result    string             `json:"result,omitempty"`
 	Response  *struct {
@@ -119,6 +120,9 @@ func parseCodexJSONLines(output string, onUpdate func(string)) (string, string) 
 		}
 		if evt.Item != nil && evt.Item.SessionID != "" {
 			sessionID = evt.Item.SessionID
+		}
+		if evt.ThreadID != "" {
+			sessionID = evt.ThreadID
 		}
 
 		if onUpdate != nil {

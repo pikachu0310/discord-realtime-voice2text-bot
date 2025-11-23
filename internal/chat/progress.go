@@ -56,6 +56,7 @@ func (p *progressBuilder) Render() string {
 	defer p.mu.Unlock()
 
 	var sections []string
+	const quietLimit = 500
 
 	var body []string
 	if p.input != "" {
@@ -77,7 +78,11 @@ func (p *progressBuilder) Render() string {
 			if p.verbose {
 				sections = append(sections, strings.Join(stepLines, "\n"))
 			} else {
-				sections = append(sections, stepLines[len(stepLines)-1])
+				line := stepLines[len(stepLines)-1]
+				if runeLen(line) > quietLimit {
+					line = truncateWithEllipsis(line, quietLimit)
+				}
+				sections = append(sections, line)
 			}
 		}
 	}
@@ -91,4 +96,16 @@ func (p *progressBuilder) Render() string {
 		return ""
 	}
 	return out
+}
+
+func runeLen(s string) int {
+	return len([]rune(s))
+}
+
+func truncateWithEllipsis(s string, limit int) string {
+	runes := []rune(s)
+	if len(runes) <= limit {
+		return s
+	}
+	return string(runes[:limit]) + "..."
 }
